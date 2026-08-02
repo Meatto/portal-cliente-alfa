@@ -127,3 +127,33 @@ export async function atualizarCliente(id: string, nome: string, email: string, 
 
   revalidatePath("/admin/clientes");
 }
+
+export interface ExcluirClienteState {
+  error?: string;
+}
+
+// Exclusão de um cliente cadastrado errado. Se o cliente já respondeu
+// alguma pesquisa de satisfação, o banco bloqueia a exclusão (chave
+// estrangeira em respostas_pesquisa) para não perder aquele histórico —
+// nesse caso devolvemos uma mensagem explicando em vez de deixar quebrar.
+export async function excluirCliente(id: string): Promise<ExcluirClienteState> {
+  await exigirAdmin(["administrador"]);
+  const supabase = createSupabaseServerClient();
+
+  if (!id) return {};
+
+  const { error } = await supabase.from("clientes").delete().eq("id", id);
+
+  if (error) {
+    if (error.code === "23503") {
+      return {
+        error:
+          "Não foi possível excluir: este cliente já tem respostas de pesquisa registradas no histórico.",
+      };
+    }
+    return { error: "Não foi possível excluir o cliente." };
+  }
+
+  revalidatePath("/admin/clientes");
+  return {};
+}
