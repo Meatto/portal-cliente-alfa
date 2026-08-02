@@ -66,3 +66,64 @@ export async function importarClientesCsv(
   revalidatePath("/admin/clientes");
   return { success: true, importados: linhasValidas.length, ignorados };
 }
+
+export interface CriarClienteState {
+  error?: string;
+  success?: boolean;
+}
+
+// Cadastro manual de um único cliente, sem precisar montar/subir CSV.
+export async function criarClienteManual(
+  _prevState: CriarClienteState,
+  formData: FormData
+): Promise<CriarClienteState> {
+  await exigirAdmin(["administrador"]);
+  const supabase = createSupabaseServerClient();
+
+  const cpf = onlyDigits(String(formData.get("cpf") ?? ""));
+  const nome = String(formData.get("nome") ?? "").trim();
+  const email = String(formData.get("email") ?? "").trim();
+  const telefone = String(formData.get("telefone") ?? "").trim();
+
+  if (!cpfValido(cpf)) return { error: "CPF inválido. Confira os números digitados." };
+  if (!nome) return { error: "Digite o nome do cliente." };
+
+  const { error } = await supabase.from("clientes").insert({
+    cpf,
+    nome,
+    email: email || null,
+    telefone: telefone || null,
+    ativo: true,
+  });
+
+  if (error) {
+    if (error.code === "23505") {
+      return { error: "Já existe um cliente cadastrado com esse CPF." };
+    }
+    return { error: "Não foi possível cadastrar o cliente." };
+  }
+
+  revalidatePath("/admin/clientes");
+  return { success: true };
+}
+
+// Edição de um cliente já cadastrado (nome, e-mail, telefone). O CPF não
+// é editável aqui — é a chave usada no login do cliente e na importação.
+export async function atualizarCliente(id: string, nome: string, email: string, telefone: string) {
+  await exigirAdmin(["administrador"]);
+  const supabase = createSupabaseServerClient();
+
+  const nomeLimpo = nome.trim();
+  if (!id || !nomeLimpo) return;
+
+  await supabase
+    .from("clientes")
+    .update({
+      nome: nomeLimpo,
+      email: email.trim() || null,
+      telefone: telefone.trim() || null,
+    })
+    .eq("id", id);
+
+  revalidatePath("/admin/clientes");
+}
