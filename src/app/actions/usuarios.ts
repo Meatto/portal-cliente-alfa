@@ -62,3 +62,92 @@ export async function reenviarConvite(email: string) {
     redirectTo: `${process.env.NEXT_PUBLIC_SITE_URL ?? ""}/auth/set-password`,
   });
 }
+
+export interface UsuarioAcaoState {
+  error?: string;
+}
+
+async function contarAdministradores(
+  supabase: ReturnType<typeof createSupabaseServerClient>
+): Promise<number> {
+  const { count } = await supabase
+    .from("usuarios_admin")
+    .select("id", { count: "exact", head: true })
+    .eq("nivel_acesso", "administrador");
+  return count ?? 0;
+}
+
+// Troca o nível de acesso de um usuário já cadastrado. Bloqueia rebaixar
+// o último administrador restante — senão ninguém mais consegue gerenciar
+// usuários ou a base de clientes.
+export async function atualizarNivelAcesso(
+  id: string,
+  nivel: NivelAcesso
+): Promise<UsuarioAcaoState> {
+  await exigirAdmin(["administrador"]);
+  if (!NIVEIS_VALIDOS.includes(nivel)) return { error: "Nível de acesso inválido." };
+
+  const supabase = createSupabaseServerClient();
+
+  const { data: usuario } = await supabase
+    .from("usuarios_admin")
+    .select("nivel_acesso")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (usuario?.nivel_acesso === "administrador" && nivel !== "administrador") {
+    const totalAdmins = await contarAdministradores(supabase);
+    if (totalAdmins <= 1) {
+      return { error: "Precisa existir ao menos um administrador. Torne outra pessoa administradora antes de rebaixar esta." };
+    }
+  }
+
+  const { error } = await supabase
+    .from("usuarios_admin")
+    .update({ nivel_acesso: nivel })
+    .eq("id", id);
+
+  if (error) return { error: "Não foi possível salvar o novo nível de acesso." };
+
+  revalidatePath("/admin/usuarios");
+  return {};
+}
+
+// Remove o acesso de alguém por completo — cancela um convite pendente
+// ou revoga o acesso de quem já estava ativo. Além de tirar da tabela
+// usuarios_admin, apaga o usuário no Supabase Auth (senão o convite
+// cancelado deixa um cadastro "fantasma" e um novo convite pro mesmo
+// e-mail pode falhar).
+export async function excluirUsuarioAdmin(formData: FormData): Promise<UsuarioAcaoState> {
+  const usuarioAtual = await exigirAdmin(["administrador"]);
+  const id = String(formData.get("id") ?? "");
+  if (!id) return {};
+
+  if (id === usuarioAtual.id) {
+    return { error: "Você não pode excluir o seu próprio acesso." };
+  }
+
+  const supabase = createSupabaseServerClient();
+
+  const { data: usuario } = await supabase
+    .from("usuarios_admin")
+    .select("nivel_acesso")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (usuario?.nivel_acesso === "administrador") {
+    const totalAdmins = await contarAdministradores(supabase);
+    if (totalAdmins <= 1) {
+      return { error: "Precisa existir ao menos um administrador. Torne outra pessoa administradora antes de excluir esta." };
+    }
+  }
+
+  const { error } = await supabase.from("usuarios_admin").delete().eq("id", id);
+  if (error) return { error: "Não foi possível excluir o usuário." };
+
+  const admin = createSupabaseAdminClient();
+  await admin.auth.admin.deleteUser(id);
+
+  revalidatePath("/admin/usuarios");
+  return {};
+}
